@@ -1,5 +1,6 @@
 module Plugin
 
+import util::Reflective;
 import ParseTree;
 import util::Reflective;
 import util::IDEServices;
@@ -58,8 +59,8 @@ value pipelineExecutionService(typecheckPipeline(start[Pipeline] input)) {
 
 void main() {
     registerLanguage( 
-        language( 
-            pathConfig(srcs=[|project://mlopsdsl/src/main/rascal|, |project://mlopsdsl/src/main/python|]), 
+        language(
+            getProjectPathConfig(|project://mlopsdsl|, mode=interpreter_external()),
             "MLOps", 
             {"mlops"}, 
             "Plugin",  
