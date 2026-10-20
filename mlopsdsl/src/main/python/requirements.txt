@@ -1,5 +1,5 @@
-pandas
-scikit-learn
-joblib
-sqlalchemy
-psycopg2-binary
+pandas==3.0.5
+scikit-learn==1.9.1
+joblib==1.6.0
+sqlalchemy==2.0.54
+psycopg2-binary==2.9.13
