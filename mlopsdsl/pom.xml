@@ -52,13 +52,14 @@
   </dependencies>
 
   <build>
+    <finalName>mlopsdsl-lsp</finalName>
     <resources>
       <resource>
         <!-- Makes the JAR recognizable as a Rascal project (Require-Libraries, etc.) -->
         <directory>.</directory>
         <filtering>false</filtering>
         <includes>
-          <include>META-INF/RASCAL.MF</include>
+          <include>META-INF-compiled/RASCAL.MF</include>
         </includes>
       </resource>
       <resource>

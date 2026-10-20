@@ -40,7 +40,7 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "prepackage": "cd ../mlopsdsl && mvn -q clean package && cp target/mlopsdsl-*.jar ../mlopsdsl-extension/assets/jars/mlopsdsl-lsp.jar && rm -rf ../mlopsdsl-extension/assets/python && mkdir -p ../mlopsdsl-extension/assets/python && cp src/main/python/*.py src/main/python/requirements.txt ../mlopsdsl-extension/assets/python/",
+    "prepackage": "cd ../mlopsdsl && mvn -q clean package && cp target/mlopsdsl-lsp.jar ../mlopsdsl-extension/assets/jars/mlopsdsl-lsp.jar && rm -rf ../mlopsdsl-extension/assets/python && mkdir -p ../mlopsdsl-extension/assets/python && cp src/main/python/*.py src/main/python/requirements.txt ../mlopsdsl-extension/assets/python/",
     "compile": "npx webpack",
     "watch": "npx webpack --watch",
     "package": "npx webpack --mode production --devtool hidden-source-map",

@@ -2,7 +2,11 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as cp from 'child_process';
-import { ParameterizedLanguageServer, VSCodeUriResolverServer, LanguageParameter } from '@usethesource/rascal-vscode-dsl-lsp-server';
+import {
+	ParameterizedLanguageServer,
+	VSCodeFileSystemInRascal,
+	type LanguageParameter,
+} from '@usethesource/rascal-vscode-dsl-lsp-server';
 
 /** Name of the virtual environment - identical to the name used in
  *  development mode under `src/main/python/.mlopsenv`. This keeps the
@@ -30,29 +34,62 @@ export async function activate(context: vscode.ExtensionContext) {
 	// extension creates the virtual environment after installation
 	const venvRootLoc = `|file://${venvRootUriPath(context)}|`;
 
-	const language = <LanguageParameter>{
-		pathConfig: `pathConfig(srcs=[${mlopsLSPJar}, ${pythonScriptsLoc}, ${venvRootLoc}])`,
+	// Since Rascal 0.43 / Rascal LSP 2.23 the path config must be complete: rascal and rascal-lsp
+	// are no longer added implicitly. This mirrors what PathConfig produces for
+	// getProjectPathConfig(..., interpreter_external()) (see PathConfig.buildNormalProjectConfig),
+	// with jars standing in for the Maven artifacts:
+	//  - srcs: rascal stdlib (inside rascal.jar), the sources of each dependency (jar), then our own sources
+	//  - libs: the plain jar files, used for class loading
+	// rascal.jar and rascal-lsp.jar are the very jars the language server runs on (copied by webpack).
+	const distJars = `${context.extensionUri.path}/dist/rascal-lsp`;
+	const rascalJar = `${distJars}/rascal.jar`;
+	const rascalLspJar = `${distJars}/rascal-lsp.jar`;
+	const dslJarPath = `${context.extensionUri.path}/assets/jars/mlopsdsl-lsp.jar`;
+
+	const srcs = [
+		`|jar+file://${rascalJar}!|`,
+		`|jar+file://${rascalLspJar}!|`,
+		mlopsLSPJar,
+		pythonScriptsLoc,
+		venvRootLoc,
+	];
+	const libs = [
+		`|file://${rascalJar}|`,
+		`|file://${rascalLspJar}|`,
+		`|file://${dslJarPath}|`,
+	];
+
+	const language: LanguageParameter = {
+		pathConfig: `pathConfig(srcs=[${srcs.join(', ')}], libs=[${libs.join(', ')}])`,
 		name: "MLOps DSL",
 		extensions: ["mlops"],
 		mainModule: "Plugin",
 		mainFunction: "pipelineLanguageServices"
 	};
 
-	// Rascal VS Code needs an instance of this class; it can be shared
-	// when there are multiple languages
-	const vfs = new VSCodeUriResolverServer(false);
-	// Starts the LSP server and connects it to Rascal
+	const log = vscode.window.createOutputChannel('MLOps DSL', { log: true });
+
+	// deployMode=false makes the client connect to a server on port 9999 instead of starting one,
+	// so it is only switched off deliberately (same convention as the Rascal extension itself).
+	const deployMode = (process.env['RASCAL_LSP_DEV'] ?? 'false') !== 'true';
+
+	// Virtual file system bridge between VS Code and Rascal
+	const vfs = new VSCodeFileSystemInRascal(!deployMode, log);
+
+	// Starts the dedicated LSP server for this language and connects it to Rascal.
+	// With a dedicated language no registerLanguage() call is needed.
 	const lsp = new ParameterizedLanguageServer(context,
 		vfs,
 		calcJarPath(context),
-		true,
-		"mlops",     // VS Code language ID
+		deployMode,
+		"mlops",     // VS Code language ID (must match package.json)
 		"MLOps DSL", // VS Code language title (visible in the bottom right)
 		language);
 	// Subscriptions ensure that everything is cleaned up correctly on deactivation
-	context.subscriptions.push(lsp);
+	context.subscriptions.push(log, vfs, lsp);
 }
 
+/** Folder with rascal-lsp.jar and rascal.jar, filled by CopyPlugin in webpack.config.js */
 function calcJarPath(context: vscode.ExtensionContext) {
 	return context.asAbsolutePath(path.join('.', 'dist', 'rascal-lsp'));
 }
