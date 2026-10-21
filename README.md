@@ -53,7 +53,6 @@ Packages the JAR built from `mlopsdsl` together with the Python scripts (excludi
 ### Requirements
 
 - Node.js + npm
-- An already-built `mlopsdsl` JAR (created automatically by the `prepackage` script)
 
 ### Building
 
