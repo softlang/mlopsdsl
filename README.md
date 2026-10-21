@@ -26,7 +26,7 @@ Contains:
 ### Requirements
 
 - Java 11+ and Maven
-- Rascal VS Code extension (for the `main()` test mode during development)
+- Rascal VS Code extension 0.13.5 (for the `main()` test mode during development)
 
 ### Building
 
