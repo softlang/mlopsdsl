@@ -60,9 +60,7 @@ Packages the JAR built from `mlopsdsl` together with the Python scripts (excludi
 ```bash
 cd mlopsdsl-extension
 npm install
-npm run prepackage   # rebuilds mlopsdsl and copies the JAR + Python scripts here
-npm run compile
-npx vsce package     # produces the .vsix
+npx vsce package     # produces the .vsix after running npm run prepackage (producing JAR) and npm run compile (compiling TypeScript) automatically
 
 ### Runtime behavior
 
