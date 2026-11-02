@@ -35,8 +35,23 @@
       {
         "command": "mlopsdsl.setupPythonEnvironment",
         "title": "MLOps DSL: (Re-)setup Python environment"
+      },
+      {
+        "command": "mlopsdsl.selectPythonInterpreter",
+        "title": "MLOps DSL: Select Python interpreter"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "MLOps DSL",
+      "properties": {
+        "mlopsdsl.pythonPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Python interpreter (3.11 or newer) used to create the MLOps DSL virtual environment. Leave empty to auto-detect."
+        }
+      }
+    }
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
