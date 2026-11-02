@@ -11,10 +11,24 @@ import { ParameterizedLanguageServer, VSCodeUriResolverServer, LanguageParameter
  *  both modes - only the root added to pathConfig differs. */
 const VENV_FOLDER_NAME = '.mlopsenv';
 
+/** Minimum Python version required by the dependencies in requirements.txt.
+ *  Keep in sync with the pinned versions (e.g. pandas 3 needs 3.11+). */
+const MIN_PYTHON: [number, number] = [3, 11];
+
 export async function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.commands.registerCommand('mlopsdsl.setupPythonEnvironment', () =>
-			setupPythonEnvironment(context, true))
+			setupPythonEnvironment(context, true)),
+		vscode.commands.registerCommand('mlopsdsl.selectPythonInterpreter', async () => {
+			if (await selectPythonInterpreter()) {
+				const choice = await vscode.window.showInformationMessage(
+					'MLOps DSL: Rebuild the Python environment with the selected interpreter now?',
+					'Rebuild', 'Later');
+				if (choice === 'Rebuild') {
+					await setupPythonEnvironment(context, true);
+				}
+			}
+		})
 	);
 
 	// Checking and offering setup runs in the background and does not block activation.
@@ -96,15 +110,146 @@ async function ensurePythonEnvironment(context: vscode.ExtensionContext) {
 	}
 }
 
-/** Indicates that the configured Python command does not exist at all
- *  (e.g. because Python is not installed on the system), as opposed
- *  to an error *during* the execution of venv/pip. */
-class PythonNotFoundError extends Error {}
+// ---------------------------------------------------------------------------
+// Python interpreter detection and selection
+// ---------------------------------------------------------------------------
+
+interface PythonInfo { executable: string; version: string; }
+
+/** Runs the interpreter and asks it for its real path and version.
+ *  Returns undefined if it cannot be executed at all. */
+function probePython(cmd: string, args: string[] = []): Promise<PythonInfo | undefined> {
+	return new Promise((resolve) => {
+		cp.execFile(
+			cmd,
+			[...args, '-c', 'import sys; print(sys.executable); print("%d.%d.%d" % sys.version_info[:3])'],
+			{ timeout: 10000 },
+			(err, stdout) => {
+				if (err) { return resolve(undefined); }
+				const [executable, version] = stdout.trim().split(/\r?\n/);
+				resolve(executable && version ? { executable, version } : undefined);
+			});
+	});
+}
+
+function parseVersion(v: string): number[] {
+	return v.split('.').map(Number);
+}
+
+function compareVersions(a: string, b: string): number {
+	const [pa, pb] = [parseVersion(a), parseVersion(b)];
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const d = (pa[i] ?? 0) - (pb[i] ?? 0);
+		if (d !== 0) { return d; }
+	}
+	return 0;
+}
+
+function isSupported(version: string): boolean {
+	return compareVersions(version, `${MIN_PYTHON[0]}.${MIN_PYTHON[1]}`) >= 0;
+}
+
+/** Finds interpreters on PATH, newest first, without duplicates. */
+async function detectInterpreters(): Promise<PythonInfo[]> {
+	const minors = ['3.14', '3.13', '3.12', '3.11', '3.10', '3.9'];
+	const candidates: [string, string[]][] = process.platform === 'win32'
+		? [['python', []], ['py', ['-3']], ...minors.map((v): [string, string[]] => ['py', [`-${v}`]])]
+		: [...minors.map((v): [string, string[]] => [`python${v}`, []]), ['python3', []], ['python', []]];
+
+	const probed = await Promise.all(candidates.map(([cmd, args]) => probePython(cmd, args)));
+	const seen = new Set<string>();
+	const found: PythonInfo[] = [];
+	for (const info of probed) {
+		if (info && !seen.has(info.executable)) {
+			seen.add(info.executable);
+			found.push(info);
+		}
+	}
+	return found.sort((a, b) => compareVersions(b.version, a.version));
+}
+
+/** Uses the configured interpreter, otherwise the newest supported one found. */
+async function resolvePython(): Promise<{ info?: PythonInfo; problem?: string }> {
+	const configured = vscode.workspace.getConfiguration('mlopsdsl')
+		.get<string>('pythonPath', '').trim();
+
+	if (configured) {
+		const info = await probePython(configured);
+		if (!info) {
+			return { problem: `The configured interpreter "${configured}" could not be run.` };
+		}
+		if (!isSupported(info.version)) {
+			return { problem: `The configured interpreter is Python ${info.version}, but ${MIN_PYTHON.join('.')} or newer is required.` };
+		}
+		return { info };
+	}
+
+	const supported = (await detectInterpreters()).filter(i => isSupported(i.version));
+	return supported.length > 0
+		? { info: supported[0] }
+		: { problem: `No Python ${MIN_PYTHON.join('.')} or newer was found.` };
+}
+
+/** Lets the user pick an interpreter and stores it in the settings. */
+async function selectPythonInterpreter(): Promise<boolean> {
+	const found = await vscode.window.withProgress(
+		{ location: vscode.ProgressLocation.Window, title: 'MLOps DSL: Searching for Python interpreters…' },
+		() => detectInterpreters());
+
+	type Item = vscode.QuickPickItem & { info?: PythonInfo };
+	const items: Item[] = [
+		...found.filter(i => isSupported(i.version)).map(i => ({
+			label: `Python ${i.version}`,
+			detail: i.executable,
+			info: i
+		})),
+		{ label: '$(folder-opened) Browse for an interpreter…' }
+	];
+
+	const picked = await vscode.window.showQuickPick(items, {
+		title: 'MLOps DSL: Select Python interpreter',
+		placeHolder: `Python ${MIN_PYTHON.join('.')} or newer`
+	});
+	if (!picked) { return false; }
+
+	let chosen = picked.info;
+	if (!chosen) {
+		const uris = await vscode.window.showOpenDialog({
+			canSelectMany: false,
+			title: 'Select a Python executable'
+		});
+		if (!uris || uris.length === 0) { return false; }
+		chosen = await probePython(uris[0].fsPath);
+		if (!chosen) {
+			void vscode.window.showErrorMessage('MLOps DSL: The selected file is not a working Python interpreter.');
+			return false;
+		}
+		if (!isSupported(chosen.version)) {
+			void vscode.window.showErrorMessage(
+				`MLOps DSL: That is Python ${chosen.version}, but ${MIN_PYTHON.join('.')} or newer is required.`);
+			return false;
+		}
+	}
+
+	await vscode.workspace.getConfiguration('mlopsdsl')
+		.update('pythonPath', chosen.executable, vscode.ConfigurationTarget.Global);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Environment setup
+// ---------------------------------------------------------------------------
 
 async function setupPythonEnvironment(context: vscode.ExtensionContext, showSuccessMessage: boolean) {
 	const venv = venvDir(context);
-	const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
 	const requirements = context.asAbsolutePath(path.join('assets', 'python', 'requirements.txt'));
+
+	// Resolve BEFORE showing the progress notification - we may need to prompt the user
+	const { info, problem } = await resolvePython();
+	if (!info) {
+		await handleNoInterpreter(context, problem ?? 'No suitable Python interpreter found.', showSuccessMessage);
+		return;
+	}
 
 	await vscode.window.withProgress({
 		location: vscode.ProgressLocation.Notification,
@@ -114,8 +259,11 @@ async function setupPythonEnvironment(context: vscode.ExtensionContext, showSucc
 		try {
 			fs.mkdirSync(venvRootFsPath(context), { recursive: true });
 
-			progress.report({ message: 'Create virutal environment…' });
-			await run(pythonCmd, ['-m', 'venv', venv]);
+			// Without this, `venv` would reuse an existing env built with an old interpreter
+			fs.rmSync(venv, { recursive: true, force: true });
+
+			progress.report({ message: `Create virtual environment (Python ${info.version})…` });
+			await run(info.executable, ['-m', 'venv', venv]);
 
 			const pip = pythonExecutablePath(venv);
 			progress.report({ message: 'Update pip…' });
@@ -127,25 +275,25 @@ async function setupPythonEnvironment(context: vscode.ExtensionContext, showSucc
 			}
 
 			if (showSuccessMessage) {
-				void vscode.window.showInformationMessage('MLOps DSL: Python environment setup successfull.');
+				void vscode.window.showInformationMessage('MLOps DSL: Python environment setup successful.');
 			}
 		} catch (err) {
-			if (err instanceof PythonNotFoundError) {
-				await handlePythonNotFound(context, pythonCmd, showSuccessMessage);
-			} else {
-				void vscode.window.showErrorMessage(`MLOps DSL: Python environment setup failed: ${err}`);
-			}
+			void vscode.window.showErrorMessage(`MLOps DSL: Python environment setup failed: ${err}`);
 		}
 	});
 }
 
-async function handlePythonNotFound(context: vscode.ExtensionContext, pythonCmd: string, showSuccessMessage: boolean) {
+async function handleNoInterpreter(context: vscode.ExtensionContext, problem: string, showSuccessMessage: boolean) {
 	const choice = await vscode.window.showErrorMessage(
-		`MLOps DSL: No "${pythonCmd}" was found. Please install Python 3 and try again.`,
-		'Open Python download page', 'Try again'
+		`MLOps DSL: ${problem}`,
+		'Select interpreter', 'Open Python download page', 'Try again'
 	);
 
-	if (choice === 'Open Python download page') {
+	if (choice === 'Select interpreter') {
+		if (await selectPythonInterpreter()) {
+			await setupPythonEnvironment(context, showSuccessMessage);
+		}
+	} else if (choice === 'Open Python download page') {
 		void vscode.env.openExternal(vscode.Uri.parse('https://www.python.org/downloads/'));
 		// Offer a retry directly instead of referring the user to the command
 		// palette - they do not need to know the command name
@@ -163,16 +311,11 @@ async function handlePythonNotFound(context: vscode.ExtensionContext, pythonCmd:
 
 function run(cmd: string, args: string[]): Promise<void> {
 	return new Promise((resolve, reject) => {
-		const proc = cp.spawn(cmd, args, { shell: process.platform === 'win32' });
+		// No shell needed: cmd is an absolute path to an executable
+		const proc = cp.spawn(cmd, args);
 		let stderr = '';
 		proc.stderr?.on('data', (d) => { stderr += d.toString(); });
-		proc.on('error', (err: NodeJS.ErrnoException) => {
-			if (err.code === 'ENOENT') {
-				reject(new PythonNotFoundError(`Command "${cmd}" was not found.`));
-			} else {
-				reject(err);
-			}
-		});
+		proc.on('error', reject);
 		proc.on('close', (code: number | null) => {
 			if (code === 0) {
 				resolve();
