@@ -40,22 +40,22 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run package",
-    "prepackage": "cd ../mlopsdsl && mvn -q clean package && cp target/mlopsdsl-*.jar ../mlopsdsl-extension/assets/jars/mlopsdsl-lsp.jar && rm -rf ../mlopsdsl-extension/assets/python && mkdir -p ../mlopsdsl-extension/assets/python && cp src/main/python/*.py src/main/python/requirements.txt ../mlopsdsl-extension/assets/python/",
+    "prepackage": "cd ../mlopsdsl && mvn -q clean package && mkdir -p ../mlopsdsl-extension/assets/jars && cp target/mlopsdsl-*.jar ../mlopsdsl-extension/assets/jars/mlopsdsl-lsp.jar && rm -rf ../mlopsdsl-extension/assets/python && mkdir -p ../mlopsdsl-extension/assets/python && cp src/main/python/*.py src/main/python/requirements.txt ../mlopsdsl-extension/assets/python/",
     "compile": "npx webpack",
     "watch": "npx webpack --watch",
     "package": "npx webpack --mode production --devtool hidden-source-map",
     "lint": "npx eslint src --ext ts"
   },
   "devDependencies": {
-    "@types/vscode": "^1.75.0",
     "@types/node": "18.x",
+    "@types/vscode": "^1.75.0",
     "@typescript-eslint/eslint-plugin": "^6.0.0",
     "@typescript-eslint/parser": "^6.0.0",
+    "@vscode/vsce": "^2.24.0",
     "copy-webpack-plugin": "^11.0.0",
     "eslint": "^8.26.0",
-    "typescript": "^5.3.0",
     "ts-loader": "^9.4.1",
-    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.3.0",
     "webpack": "^5.74.0",
     "webpack-cli": "^4.10.0"
   },
