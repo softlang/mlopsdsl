@@ -389,6 +389,7 @@ def main():
                 thresholds = request["thresholds"]
 
                 deployment_artifact = joblib.load(context["path"])
+                deployment_artifact["target"] = context["target"]
                 deployment_artifact["baseline_df"] = context["baseline_df"][features]
                 deployment_artifact["methods"] = methods
                 deployment_artifact["windows"] = windows

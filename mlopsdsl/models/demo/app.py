@@ -22,6 +22,7 @@ transformers = artifact["transformers"]
 transform_log = artifact["transform_log"]
 transformed_columns = artifact["transformed_columns"]
 selected_features = artifact["selected_features"]
+target = artifact["target"]
 baseline_df = artifact["baseline_df"]
 methods = artifact["methods"]
 windows = artifact["windows"]
@@ -43,9 +44,10 @@ engine = create_engine(url, pool_pre_ping=True)
 requests_table = Table(TABLE_NAME, MetaData(), autoload_with=engine)
 
 
-def store_request(payload: dict) -> None:
+def store_request(payload: dict, pred) -> None:
     try:
         row = {f: payload[f] for f in selected_features}
+        row[target] = pred.item() if hasattr(pred, "item") else pred
         with engine.begin() as conn:
             conn.execute(insert(requests_table), row)
     except Exception:
@@ -189,7 +191,7 @@ def predict(item: InputSchema, background_tasks: BackgroundTasks):
     if LATENCY_LIMIT_MS is not None and elapsed_ms > LATENCY_LIMIT_MS:
         warnings.append(f"Latency {elapsed_ms:.1f}ms exceeded {LATENCY_LIMIT_MS}ms")
 
-    background_tasks.add_task(store_request, raw)
+    background_tasks.add_task(store_request, raw, pred)
 
     result = {"prediction": pred.item() if hasattr(pred, "item") else pred}
     if warnings:
