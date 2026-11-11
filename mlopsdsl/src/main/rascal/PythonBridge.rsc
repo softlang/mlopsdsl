@@ -18,7 +18,7 @@ data RuntimeException
 
 data PythonCmd 
   = loadCmd(str cmd, str path, str target, str dbURL, bool reRun)
-  | splitCmd(str cmd, str ratio, str randomState)
+  | splitCmd(str cmd, real ratio, int randomState)
   | selectCmd(str cmd, list[str] features)
   | transformCmd(str cmd, str action, str feature, str method)
   | trainCmd(str cmd, str algo, map[str, str] hyperparameters, str modelDir)

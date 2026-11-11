@@ -125,12 +125,11 @@ MLOpsStore evalSplit(Split sp:stepSplit(real trainSize, list[int] randomState), 
     if (trainSize >= 1) {
         throw invalidTrainSize("Train size exceeds 1.0");
     }
-    str ratioStr = "<trainSize>";
-    str randomStateStr = "42";
+    int randState = 42;
     if (size(randomState) != 0) {
-        randomStateStr = "<randomState[0]>";
+        randState = randomState[0];
     }
-    PythonCmd cmd = splitCmd("SPLIT", ratioStr, randomStateStr);
+    PythonCmd cmd = splitCmd("SPLIT", trainSize, randState);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "SPLIT", sp.src);
     return store(s.name, dataSplit(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
