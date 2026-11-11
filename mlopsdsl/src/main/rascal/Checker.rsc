@@ -155,7 +155,7 @@ MLOpsStore checkTransSem(AST::Trans trans, MLOpsStore store) {
                 fixes=removeEntryFix("Remove transformation of target column", transformLocs, i))>};
             continue;
         }
-        byFeature[ptrans.feat] = (ptrans.feat in byFeature ? byFeature[ptrans.feat] : []) + <ptrans.tr, src>;
+        byFeature[ptrans.feat] = (byFeature[ptrans.feat] ? []) + <ptrans.tr, src>;
     }
     for (str feat <- byFeature) {
         set[str] seenTrans = {};
