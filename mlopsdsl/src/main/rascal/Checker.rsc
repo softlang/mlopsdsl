@@ -14,56 +14,8 @@ import util::Math;
 import Syntax;
 import AST;
 import PythonBridge;
-
-data MLOpsStore = mStore(str targetVariable, bool dbConnection, Task task, rel[loc, Message] messages);
-
-data ColumnType
-    = tInteger()
-    | tFloat()
-    | tCategorical()
-    | tBoolean()
-    | tUnknown()
-    ;
-
-data ColumnInfo = colInfo(ColumnType ctype) | colInfoEnc(ColumnType ctype, EncodingMethod method, ColumnType oType);
-
-alias Schema = map[str featName, ColumnInfo info];
-
-data TypeStore = tStore(str target, Schema schema, Task task, rel[loc, Message] messages);
-
-data Task = classification() | regression() | null();
-
-data ParamType
-    = ptInt()
-    | ptFloat()
-    | ptBool()
-    | ptEnum(set[str] allowed)
-    ;
-
-alias ParamSignature = map[str name, ParamType ptype];
-
-data ColumnInfoJson = columnInfoJson(str \type);
-data SchemaJson = schemaJson(str status, map[str, ColumnInfoJson] columns = (), str message = "");
-
-map[Algorithm, ParamSignature] ALGO_SIGNATURES = (
-    AST::algoLR(): (
-        "fit_intercept": ptBool(),
-        "positive": ptBool()
-    ),
-    AST::algoRF(): (
-        "n_estimators": ptInt(),
-        "max_depth": ptInt(),
-        "criterion": ptEnum({"gini", "entropy", "log_loss"}),
-        "bootstrap": ptBool(),
-        "random_state": ptInt()
-    ),
-    AST::algoLogReg(): (
-        "max_iter": ptInt(),
-        "C": ptFloat(),
-        "penalty": ptEnum({"l1", "l2", "elasticnet", "none"}),
-        "random_state": ptInt()
-    )
-);
+import Interpreter;
+import Store;
 
 Summary mlopsAnalysisService(loc l, start[Pipeline] input) 
     = mlopsSummaryServiceSem(l, implode(#AST::Pipeline, input));
@@ -80,12 +32,12 @@ Summary mlopsSummaryServiceSem(loc l, AST::Pipeline input) {
 }
 
 MLOpsStore initMLOpsStore() {
-    return mStore("", false, null(), {});
+    return cStore("", false, null(), {});
 }
 
 MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
     AST::Steps steps = input.steps;
-    store = checkLoadSem(steps.load, store);
+    store = evalLoad(steps.load, store, -1, false, checker=true);
     if (size(steps.split) != 0) {
         store = checkSplitSem(steps.split[0], store);
     }
@@ -110,10 +62,6 @@ MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
     return store;
 }
 
-MLOpsStore checkLoadSem(AST::Load load, MLOpsStore store) {
-    return mStore(load.target.content, size(load.dbURL) != 0, store.task, store.messages);
-}
-
 MLOpsStore checkSplitSem(AST::Split split, MLOpsStore store) {
     if (split.trainSize <= 0) {
         store.messages += {<split.src, error("Train size is below 0.0",split.src)>};
@@ -121,7 +69,7 @@ MLOpsStore checkSplitSem(AST::Split split, MLOpsStore store) {
     if (split.trainSize >= 1) {
         store.messages += {<split.src, error("Train size exceeds 1.0",split.src)>};
     }
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 MLOpsStore checkSelectSem(AST::Select select, MLOpsStore store) {
@@ -140,7 +88,7 @@ MLOpsStore checkSelectSem(AST::Select select, MLOpsStore store) {
             seen += {f.content};
         }
     }
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 MLOpsStore checkTransSem(AST::Trans trans, MLOpsStore store) {
@@ -148,7 +96,7 @@ MLOpsStore checkTransSem(AST::Trans trans, MLOpsStore store) {
     list[loc] transformLocs = [pt.feature.src | pt <- trans.transforms];
     for (int i <- [0..size(trans.transforms)]) {
         AST::PrepTransform pt = trans.transforms[i];
-        tuple[str tr, str feat] ptrans = evalPrepTransform(pt);
+        tuple[str tr, str feat] ptrans = evalPrepTransform(pt)<0,1>;
         loc src = pt.feature.src;
         if (ptrans.feat == store.targetVariable) {
             store.messages += {<src, error("The target column cannot be transformed.", src,
@@ -186,27 +134,12 @@ MLOpsStore checkTransSem(AST::Trans trans, MLOpsStore store) {
         }
     }
 
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-tuple[str tr, str feat] evalPrepTransform(prepFill(StrLit feature, FillStrategy _)) {
-    str feat = feature.content;
-    return <"fillna", feat>;
-}
-
-tuple[str tr, str feat] evalPrepTransform(prepEncode(StrLit feature, EncodingMethod _)) {
-    str feat = feature.content;
-    return <"encode", feat>;
-}
-
-tuple[str tr, str feat] evalPrepTransform(prepScale(StrLit feature, ScaleMethod _)) {
-    str feat = feature.content;
-    return <"scale", feat>;
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 MLOpsStore checkModelSem(AST::Model model, MLOpsStore store) {
     store = checkHyperparamsSem(model.expr, store);
-    return mStore(store.targetVariable, store.dbConnection, taskOf(model.expr.algo), store.messages);
+    return cStore(store.targetVariable, store.dbConnection, taskOf(model.expr.algo), store.messages);
 }
 
 MLOpsStore checkHyperparamsSem(AST::ModelExpr expr, MLOpsStore store) {
@@ -221,7 +154,7 @@ MLOpsStore checkHyperparamsSem(AST::ModelExpr expr, MLOpsStore store) {
             store.messages += {<p.val.src, error("\'<p.name>\' has an incompatible value: expected <sig[p.name]>.", p.val.src)>};
         }
     }
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 ParamSignature signatureOf(algoLR()) = (
@@ -261,7 +194,7 @@ MLOpsStore checkEvalSem(AST::Eval eval, MLOpsStore store) {
     for (EvalRule evalRule <- eval.evalRules) {
         store.messages += checkEvalRule(evalRule, task);
     }
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 rel[loc, Message] checkEvalRule(EvalRule er:evalCRule(CMetric m, real threshold), Task task) {
@@ -334,7 +267,7 @@ MLOpsStore checkMonitorSem(AST::Monitor monitor, MLOpsStore store) {
         }
     }
 
-    return mStore(store.targetVariable, store.dbConnection, store.task, store.messages);
+    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
 }
 
 list[DriftRule] driftRulesOf(stepMonitor(list[DriftRule] drs, _)) = drs;
@@ -397,7 +330,7 @@ SchemaJson retrieveResponse(PID pid) {
 
 TypeStore initTypeStore(AST::Pipeline input, SchemaJson resp) {
     Schema schema = buildSchema(resp);
-    return tStore(input.steps.load.target.content, schema, null(), {});
+    return tStore(input.steps.load.target.content, schema, null());
 }
 
 Schema buildSchema(SchemaJson resp) {
@@ -440,7 +373,7 @@ TypeStore checkLoadType(AST::Load load, TypeStore store) {
         store.messages += {<load.target.src, error("Target column \'<load.target.content>\' not found in dataset.", load.target.src,
             fixes=schemaSuggestionFixes(load.target.src, load.target.content, store.schema))>};
     }
-    return tStore(load.target.content, store.schema, null(), store.messages);
+    return tStore(load.target.content, store.schema, null(), messages=store.messages);
 }
 
 TypeStore checkSelectType(AST::Select select, TypeStore store) {
@@ -458,7 +391,7 @@ TypeStore checkSelectType(AST::Select select, TypeStore store) {
     if (store.target in schema) {
         newSchema[store.target] = schema[store.target];
     }
-    return tStore(store.target, newSchema, null(), store.messages);
+    return tStore(store.target, newSchema, null(), messages=store.messages);
 }
 
 TypeStore checkTransType(AST::Trans trans, TypeStore store) {
@@ -501,7 +434,7 @@ TypeStore checkAndApplyTransform(prepScale(StrLit feature, ScaleMethod _), TypeS
             schema = schema + (feat: colInfoEnc(tFloat(), method, oldType));
         }
     }
-    return tStore(store.target, schema, store.task, store.messages);
+    return tStore(store.target, schema, store.task, messages=store.messages);
 }
 
 TypeStore checkAndApplyTransform(prepEncode(StrLit feature, EncodingMethod method), TypeStore store) {
@@ -514,7 +447,7 @@ TypeStore checkAndApplyTransform(prepEncode(StrLit feature, EncodingMethod metho
     }
     ColumnType oldType = schema[feat].ctype;
     schema = schema + (feat: colInfoEnc(tInteger(), method, oldType));
-    return tStore(store.target, schema, store.task, store.messages);
+    return tStore(store.target, schema, store.task, messages=store.messages);
 }
 
 rel[loc, Message] requireColumnSelect(Schema schema, StrLit feat) {
@@ -543,7 +476,7 @@ TypeStore checkModelType(AST::Model model, TypeStore store) {
     str target = store.target;
 
     if (target notin schema) {
-        return tStore(store.target, store.schema, task, store.messages);
+        return tStore(store.target, store.schema, task, messages=store.messages);
     }
     ColumnInfo targetInfo = schema[target];
 
@@ -564,7 +497,7 @@ TypeStore checkModelType(AST::Model model, TypeStore store) {
             }
         }
     }
-    return tStore(store.target, store.schema, task, store.messages);
+    return tStore(store.target, store.schema, task, messages=store.messages);
 }
 
 Task taskOf(algoLR()) = regression();
@@ -603,7 +536,7 @@ TypeStore checkMonitorTypes(AST::Monitor monitor, TypeStore store) {
             }
         }
     }
-    return tStore(store.target, store.schema, store.task, store.messages);
+    return tStore(store.target, store.schema, store.task, messages=store.messages);
 }
 
 list[CodeAction] prepareNoDeploymentFixes(loc src)
@@ -752,7 +685,7 @@ rel[loc, str] computeDocs(AST::Pipeline input) {
         docs += {<f.src, "*selected feature* <f.content>"> | f <- steps.select[0].features};
     }
     if (size(steps.trans) != 0) {
-        docs += {<pt.feature.src, "*transformed feature* <pt.feature.content> (<evalPrepTransform(pt).tr>)">
+        docs += {<pt.feature.src, "*transformed feature* <pt.feature.content> (<evalPrepTransform(pt)<1>>)">
                   | pt <- steps.trans[0].transforms};
     }
     if (size(steps.monitor) != 0) {

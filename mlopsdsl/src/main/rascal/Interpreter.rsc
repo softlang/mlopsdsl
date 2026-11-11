@@ -17,18 +17,7 @@ import Syntax;
 import AST;
 import PythonBridge;
 import CodeGen;
-
-data PipelineState
-    = uninitialized()
-    | dataLoaded()
-    | dataSplit()
-    | featuresSelected()
-    | transformed()
-    | modelTrained()
-    | modelEvaluated()
-    | deployed(int port);
-
-data MLOpsStore = store(str name, PipelineState state, str targetVariable, bool dbConnection, str trainedModelFilePath, bool monitored, Maybe[int] latency) | empty();
+import Store;
 
 data RuntimeException 
     = reRunWithoutDatabase(str cause)
@@ -67,7 +56,7 @@ MLOpsStore evalPipeline(pipeline(str name, Steps steps), bool reRun) {
     PID pid = startPythonWorker();
     MLOpsStore s = empty();
     try
-        s = evalSteps(steps, store(name, uninitialized(), "", false, "", false, nothing()), pid, reRun);
+        s = evalSteps(steps, iStore(name, uninitialized(), "", false, "", false, nothing()), pid, reRun);
     catch RuntimeException e: {
         stopPythonWorker(pid);
         throw e;
@@ -103,17 +92,20 @@ MLOpsStore evalSteps(steps(Load load, list[Split] split, list[Select] select, li
     return s;
 }
 
-MLOpsStore evalLoad(Load l:stepLoad(StrLit path, StrLit target, list[StrLit] dbURL), MLOpsStore s, PID pid, bool reRun) {
-    if (reRun && size(dbURL) == 0) {
+MLOpsStore evalLoad(Load l:stepLoad(StrLit path, StrLit target, list[StrLit] dbURL), MLOpsStore s, PID pid, bool reRun, bool checker = false) {
+    if (!checker && reRun && size(dbURL) == 0) {
         throw reRunWithoutDatabase("A re-run requires a database connection. Without one, run the pipeline normally with an updated CSV.");
+    }
+    str targetAsStr = evalStrLit(target);
+    if (checker) {
+        return cStore(targetAsStr, size(dbURL) != 0, s.task, s.messages);
     }
     str p = evalStrLit(path);
     str absolutePath = (l.src.parent + p).path;
-    str targetAsStr = evalStrLit(target);
     PythonCmd cmd = loadCmd("LOAD", absolutePath, targetAsStr, size(dbURL) != 0 ? evalStrLit(dbURL[0]) : "", reRun);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "LOAD", l.src);
-    return store(s.name, dataLoaded(), targetAsStr, size(dbURL) != 0, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, dataLoaded(), targetAsStr, size(dbURL) != 0, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 str evalStrLit(strLit(str s)) = s;
@@ -132,7 +124,7 @@ MLOpsStore evalSplit(Split sp:stepSplit(real trainSize, list[int] randomState), 
     PythonCmd cmd = splitCmd("SPLIT", trainSize, randState);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "SPLIT", sp.src);
-    return store(s.name, dataSplit(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, dataSplit(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 MLOpsStore evalSelect(Select se:stepSelect(list[StrLit] features), MLOpsStore s, PID pid) {
@@ -149,7 +141,7 @@ MLOpsStore evalSelect(Select se:stepSelect(list[StrLit] features), MLOpsStore s,
     PythonCmd cmd = selectCmd("SELECT", strFeatures);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "SELECT", se.src);
-    return store(s.name, featuresSelected(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, featuresSelected(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsStore s, PID pid) {
@@ -178,7 +170,7 @@ MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsSto
         PythonResponse res = sendJsonToPython(pid, cmd);
         reportResult(res, "TRANSFORM", t.src);
     }
-    return store(s.name, transformed(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, transformed(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 tuple[str tr, str feat, str strat] evalPrepTransform(prepFill(StrLit feature, FillStrategy strategy)) {
@@ -225,7 +217,7 @@ MLOpsStore evalModel(Model m:stepModel(modelTrain(Algorithm algo, StrLit path, l
     PythonCmd cmd = trainCmd("TRAIN", algo_as_string, params, modelDir);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "TRAIN", m.src);
-    return store(s.name, modelTrained(), s.targetVariable, s.dbConnection, res.modelFilePath, s.monitored, s.latency);
+    return iStore(s.name, modelTrained(), s.targetVariable, s.dbConnection, res.modelFilePath, s.monitored, s.latency);
 }
 
 str evalAlgo(algoLR()) = "LinReg";
@@ -265,7 +257,7 @@ MLOpsStore evalEval(Eval e:stepEval(set[EvalRule] evalRules), MLOpsStore s, PID 
         }
         reportResult(res, "EVAL", e.src);
     }
-    return store(s.name, modelEvaluated(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, modelEvaluated(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 tuple[str, real, bool] evalEvalRule(evalCRule(CMetric metric, real threshold))
@@ -288,7 +280,7 @@ str evalRMetric(mRMSE()) = "rmse";
 
 MLOpsStore evalDeploy(Deploy d:stepDeploy(int port), MLOpsStore s) {
     showMessage(info("[DEPLOY] Gathered deployement information", d.src));
-    return store(s.name, deployed(port), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
+    return iStore(s.name, deployed(port), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
 MLOpsStore evalMonitor(Monitor mon, MLOpsStore s, PID pid) {
@@ -351,7 +343,7 @@ MLOpsStore evalMonitor(Monitor mon, MLOpsStore s, PID pid) {
         }
         ms = just(parsedMs);
     }
-    return store(s.name, s.state, s.targetVariable, s.dbConnection, s.trainedModelFilePath, size(monitored) != 0, ms);
+    return iStore(s.name, s.state, s.targetVariable, s.dbConnection, s.trainedModelFilePath, size(monitored) != 0, ms);
 }
 
 list[DriftRule] driftRulesOf(stepMonitor(list[DriftRule] drs, _)) = drs;
