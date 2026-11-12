@@ -10,7 +10,6 @@ import util::ShellExec;
 import IO;
 import util::IDEServices;
 import Message;
-import util::Maybe;
 import Exception;
 
 import Syntax;
@@ -28,8 +27,8 @@ data RuntimeException
     | targetSelectedForTransform(str cause)
     | duplicateTransform(str cause)
     | transformOrderViolation(str cause)
+    | invalidHyperparameter(str cause)
     | targetSelectedForMonitoring(str cause)
-    | windowTooSmall(str cause)
     | invalidThreshold(str cause)
     | invalidFrequency(str cause)
     | invalidMinEffect(str cause)
@@ -194,12 +193,11 @@ MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsSto
                 if (!checker) {
                     throw duplicateTransform("Feature must not be transformed multiple times by the same method.");
                 }
-                s.messages += {<src, error("Feature must not be transformed multiple times by the same method.", src
+                s.messages += {<src, error("Feature must not be transformed multiple times by the same method.", src,
                     fixes=removeEntryFix("Remove duplicate transformation", transformLocs<0>, idx))>};
             } else {
                 seenTrans += {tr};
             }
-
             if (sawScale && (tr == "fillna" || tr == "encode")) {
                 if (!checker) {
                     throw transformOrderViolation("Scaling must be the last transformation of a feature.");
@@ -209,7 +207,6 @@ MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsSto
             if (tr == "scale") {
                 sawScale = true;
             }
-
             if (sawEncode && tr == "fillna") {
                 if (!checker) {
                     throw transformOrderViolation("Missing values must be filled before encoding a feature.");
@@ -264,15 +261,26 @@ str evalScaleMethod(scaleMinMax()) = "minmax";
 
 str evalScaleMethod(scaleStd()) = "std";
 
-MLOpsStore evalModel(Model m:stepModel(modelTrain(Algorithm algo, StrLit path, list[Param] hyperParams)), MLOpsStore s, PID pid) {
-    str algo_as_string = evalAlgo(algo);
-    map[str, str] params = (); 
+MLOpsStore evalModel(Model m:stepModel(modelTrain(Algorithm algo, StrLit path, list[Param] hyperParams)), MLOpsStore s, PID pid, bool checker=false) {
+    map[str, str] params = ();
+    ParamSignature sig = signatureOf(algo);
     for (Param hyperParam <- hyperParams) {
         tuple[str name, str val] param = evalParam(hyperParam);
+        if (hyperParam.name notin sig) {
+            if (!checker) {
+                throw invalidHyperparameter("\'<param.name>\' is not a valid hyperparameter for <algo.name>.");
+            } 
+            s.messages += {<hyperParam.src, error("\'<param.name>\' is not a valid hyperparameter for <algo.name>.", hyperParam.src,
+                fixes=invalidParamNameFixes(hyperParam.src, param.name, sig))>};
+        }
         params[param.name] = param.val;
+    }
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, taskOf(algo), s.messages);
     }
     str p = evalStrLit(path);
     str modelDir = (m.src.parent + p).path + "/<s.name>";
+    str algo_as_string = evalAlgo(algo);
     PythonCmd cmd = trainCmd("TRAIN", algo_as_string, params, modelDir);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "TRAIN", m.src);
@@ -298,23 +306,34 @@ str evalLit(strLit(StrLit s)) = evalStrLit(s);
 
 str evalLit(boolLit(bool b)) = "<b>";
 
-MLOpsStore evalEval(Eval e:stepEval(set[EvalRule] evalRules), MLOpsStore s, PID pid) {
+MLOpsStore evalEval(Eval e:stepEval(set[EvalRule] evalRules), MLOpsStore s, PID pid, bool checker = false) {
     for (EvalRule evalRule <- evalRules) {
         <metric_as_str, threshold, higherIsBetter> = evalEvalRule(evalRule);
-
         if (higherIsBetter && (threshold > 1.0 || threshold < 0)) {
-            throw invalidThreshold("Threshold for \'<metric_as_str>\' must be between 0 and 1");
+            if (!checker) {
+                throw invalidThreshold("Threshold for \'<metric_as_str>\' must be between 0 and 1");
+            }
+            s.messages += {<evalRule.src, error("Threshold for \'<metric_as_str>\' must be between 0 and 1", evalRule.src)>};
+        } else if (!higherIsBetter && (threshold < 0)) {
+            if (!checker) {
+                throw invalidThreshold("Threshold for \'<metric_as_str>\' must be at least 0");
+            }
+            s.messages += {<evalRule.src, error("Threshold for \'<metric_as_str>\' must be at least 0", evalRule.src)>};
         }
-
+    }
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
+    }
+    for (EvalRule evalRule <- evalRules) {
+        <metric_as_str, threshold, higherIsBetter> = evalEvalRule(evalRule);
         PythonCmd cmd = evalCmd("EVAL", metric_as_str);
         PythonResponse res = sendJsonToPython(pid, cmd);
+        reportResult(res, "EVAL", e.src);
         real val = res.evalResults[metric_as_str];
-
         bool reached = higherIsBetter ? val >= threshold : val <= threshold;
         if (!reached) {
             throw evalThresholdNotReached("Pipeline stopped before potential deployment since evaluation thresholds were not met.");
         }
-        reportResult(res, "EVAL", e.src);
     }
     return iStore(s.name, modelEvaluated(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
@@ -325,84 +344,108 @@ tuple[str, real, bool] evalEvalRule(evalCRule(CMetric metric, real threshold))
 tuple[str, real, bool] evalEvalRule(evalRRule(RMetric metric, real threshold))
     = <evalRMetric(metric), threshold, false>;
 
-str evalCMetric(mAccuracy())  = "acc";
+str evalCMetric(mAccuracy()) = "acc";
 
 str evalCMetric(mPrecision()) = "pre";
 
-str evalCMetric(mRecall())    = "rec";
+str evalCMetric(mRecall()) = "rec";
 
-str evalCMetric(mF1())        = "f1";
+str evalCMetric(mF1()) = "f1";
 
-str evalRMetric(mMSE())  = "mse";
+str evalRMetric(mMSE()) = "mse";
 
 str evalRMetric(mRMSE()) = "rmse";
 
 MLOpsStore evalDeploy(Deploy d:stepDeploy(int port), MLOpsStore s) {
-    showMessage(info("[DEPLOY] Gathered deployement information", d.src));
+    showMessage(info("[DEPLOY] Gathered deployment information", d.src));
     return iStore(s.name, deployed(port), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
-MLOpsStore evalMonitor(Monitor mon, MLOpsStore s, PID pid) {
-    list[AST::DriftRule] driftRules = driftRulesOf(mon);
-    list[AST::LatencyRule] latencyRule = latencyRuleOf(mon);
-    if (!(deployed(_) := s.state)) {
-        throw noDeploymentDeclared("User inputs cannot be monitored without deployed model.");
-    }
+MLOpsStore evalMonitor(Monitor mon, MLOpsStore s, PID pid, bool checker = false) {
     if (!s.dbConnection) {
-        throw noDBConnection("Cannot store user data for monitoring without connected database.");
+        if (!checker) {
+            throw noDBConnection("Cannot store user data for monitoring without connected database.");
+        }
+        s.messages += {<mon.src, error("Cannot store user data for monitoring without connected database.", mon.src,
+            fixes=prepareNoConnectionFixes(mon.src))>};
     }
-    list[str] methods = [];
-    list[str] monitored = [];
-    list[int] windows = [];
-    list[int] freqs = [];
-    list[real] minEffects = [];
-    list[real] thresholds = [];
+    list[AST::DriftRule] driftRules = driftRulesOf(mon);
+    lrel[loc, tuple[str method, str feat, int win, int freq, real minEffect, real threshold]] ruleLocs = [<dr.src, evalDriftRule(dr)> | dr <- driftRules];
     set[str] seenFeatures = {};
-    for (DriftRule driftRule <- driftRules) {
-        tuple[str meth, str feat, int win, int freq, real minEffect, real threshold] dRule = evalDriftRule(driftRule);
+    for (int i <- [0..size(driftRules)]) {
+        AST::DriftRule driftRule = driftRules[i];
+        tuple[str method, str feat, int win, int freq, real minEffect, real threshold] dRule = ruleLocs[i]<1>;
         if (dRule.feat == s.targetVariable) {
-            throw targetSelectedForMonitoring("The target can not be selected as a monitored feature.");
+            if (!checker) {
+                throw targetSelectedForMonitoring("The target can not be selected as a monitored feature.");
+            }
+            s.messages += {<driftRule.src, error("The target can not be selected as a monitored feature.", driftRule.src,
+                fixes=removeEntryFix("Remove monitoring of target column", ruleLocs<0>, i))>};
         }
         if (dRule.feat in seenFeatures) {
-            throw duplicateMonitoredField("Feature \'<dRule.feat>\' is monitored more than once.");
+            if (!checker) {
+                throw duplicateMonitoredField("Feature \'<dRule.feat>\' is monitored more than once.");
+            }
+            s.messages += {<driftRule.src, error("Feature \'<dRule.feat>\' is monitored more than once.", driftRule.src,
+                fixes=removeEntryFix("Remove duplicate monitoring of feature", ruleLocs<0>, i))>};
+        } else {
+            seenFeatures += {dRule.feat};
         }
         if (dRule.win < 500) {
-            showMessage(warning("[MONITOR] Monitoring was set up with small window. Recommendation is 500 or higher.", mon.src));
+            if (!checker) {
+                showMessage(warning("[MONITOR] Monitoring was set up with small window. Recommendation is 500 or higher.", mon.src));
+            } else {
+                s.messages += {<driftRule.src, warning("The window for drift calculation is small. Recommended is 500 or higher.", driftRule.src)>};
+            }
         }
         if (dRule.threshold <= 0) {
-            throw invalidThreshold("The threshold cannot be negative or 0.");
+            if (!checker) {
+                throw invalidThreshold("The threshold cannot be negative or 0.");
+            }
+            s.messages += {<driftRule.src, error("The threshold cannot be negative or 0.", driftRule.src)>};
         }
         if (dRule.freq <= 0) {
-            throw invalidFrequency("The drift calculation frequency cannot be negative or 0");
+            if (!checker) {
+                throw invalidFrequency("The drift calculation frequency cannot be negative or 0");
+            }
+            s.messages += {<driftRule.src, error("The drift calculation frequency cannot be negative or 0.", driftRule.src)>};
         }
-        if (dRule.meth == "KS" && dRule.minEffect >= 1) {
-            throw invalidMinEffect("The minimal effect bound cannot be greater or equal to 1");
+        if (dRule.method == "KS" && dRule.minEffect >= 1) {
+            if (!checker) {
+                throw invalidMinEffect("The minimal effect bound cannot be greater or equal to 1"); 
+            }
+            s.messages += {<driftRule.src, error("The minimum effect bound cannot be greater or equal to 1", driftRule.src)>};
         }
         if (dRule.minEffect < 0) {
-            throw invalidMinEffect("The minimal effect bound cannot be smmaller than 0");
+            if (!checker) {
+                throw invalidMinEffect("The minimal effect bound cannot be smaller than 0");
+            }
+            s.messages += {<driftRule.src, error("The minimum effect bound cannot be smaller than 0", driftRule.src)>};
         }
-        methods += dRule.meth;
-        monitored += dRule.feat;
-        windows += dRule.win;
-        freqs += dRule.freq;
-        minEffects += dRule.minEffect;
-        thresholds += dRule.threshold;
-        seenFeatures += {dRule.feat};
     }
-    if (size(driftRules) != 0) {
-        PythonCmd cmd = monitorCmd("MONITOR", methods, monitored, windows, freqs, minEffects, thresholds);
-        PythonResponse res = sendJsonToPython(pid, cmd);
-        reportResult(res, "MONITOR", mon.src);
-    }   
     Maybe[int] ms = nothing();
+    list[AST::LatencyRule] latencyRule = latencyRuleOf(mon);
     if (size(latencyRule) != 0) {
+        AST::LatencyRule lRule = latencyRule[0];
         int parsedMs = evalLatencyRule(latencyRule[0]);
         if (parsedMs <= 0) {
-            throw invalidLatency("Latency cannot be smaller or equal to 0.");
+            if (!checker) {
+                throw invalidLatency("Latency cannot be smaller or equal to 0.");
+            }
+            s.messages += {<lRule.src, error("Latency cannot be smaller or equal to 0.", lRule.src)>};
+        } else {
+            ms = just(parsedMs);
         }
-        ms = just(parsedMs);
     }
-    return iStore(s.name, s.state, s.targetVariable, s.dbConnection, s.trainedModelFilePath, size(monitored) != 0, ms);
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
+    }
+    if (size(driftRules) != 0) {
+        PythonCmd cmd = monitorCmd("MONITOR", ruleLocs<1><0>, ruleLocs<1><1>, ruleLocs<1><2>, ruleLocs<1><3>, ruleLocs<1><4>, ruleLocs<1><5>);
+        PythonResponse res = sendJsonToPython(pid, cmd);
+        reportResult(res, "MONITOR", mon.src);
+    }
+    return iStore(s.name, s.state, s.targetVariable, s.dbConnection, s.trainedModelFilePath, size(ruleLocs<1><1>) != 0, ms);
 }
 
 list[DriftRule] driftRulesOf(stepMonitor(list[DriftRule] drs, _)) = drs;

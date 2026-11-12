@@ -15,19 +15,20 @@ import Syntax;
 import AST;
 import PythonBridge;
 import Interpreter;
+import TypeSystem;
 import Store;
 import InlineFixes;
 
 Summary mlopsAnalysisService(loc l, start[Pipeline] input) 
-    = mlopsSummaryServiceSem(l, implode(#AST::Pipeline, input));
+    = mlopsSummaryServiceQuick(l, implode(#AST::Pipeline, input));
 
 Summary mlopsBuildService(loc l , start[Pipeline] input)
     = mlopsSummaryServiceType(l, implode(#AST::Pipeline, input));
 
-Summary mlopsSummaryServiceSem(loc l, AST::Pipeline input) {
+Summary mlopsSummaryServiceQuick(loc l, AST::Pipeline input) {
     Summary s = summary(l);
     MLOpsStore store = initMLOpsStore();
-    store = checkStepsSem(input, store);
+    store = checkStepsQuick(input, store);
     s.messages += store.messages;
     return s;
 }
@@ -36,7 +37,7 @@ MLOpsStore initMLOpsStore() {
     return cStore("", false, null(), {});
 }
 
-MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
+MLOpsStore checkStepsQuick(AST::Pipeline input, MLOpsStore store) {
     AST::Steps steps = input.steps;
     store = evalLoad(steps.load, store, -1, false, checker=true);
     if (size(steps.split) != 0) {
@@ -48,159 +49,22 @@ MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
     if (size(steps.trans) != 0) {
         store = evalTrans(steps.trans[0], store, -1, checker=true);
     }
-    store = checkModelSem(steps.model, store);
+    store = evalModel(steps.model, store, -1, checker=true);
+    store = checkHyperparams(steps.model.expr, s=store);
     if (size(steps.eval) != 0) {
-        store = checkEvalSem(steps.eval[0], store);
+        store = evalEval(steps.eval[0], store, -1, checker=true);
+        store = checkEval(steps.eval[0], store.task, s=store);
     }
     if (size(steps.monitor) != 0) {
         if (size(steps.deploy) == 0) {
             store.messages += {<steps.monitor[0].src, error("User inputs cannot be monitored without deployed model.", steps.monitor[0].src,
                 fixes=prepareNoDeploymentFixes(steps.monitor[0].src))>};
         } else {
-            store = checkMonitorSem(steps.monitor[0], store);
+            store = evalMonitor(steps.monitor[0], store, -1, checker=true);
         }
     }
     return store;
 }   
-
-MLOpsStore checkModelSem(AST::Model model, MLOpsStore store) {
-    store = checkHyperparamsSem(model.expr, store);
-    return cStore(store.targetVariable, store.dbConnection, taskOf(model.expr.algo), store.messages);
-}
-
-MLOpsStore checkHyperparamsSem(AST::ModelExpr expr, MLOpsStore store) {
-    ParamSignature sig = signatureOf(expr.algo);
-    for (Param p <- expr.hyperParams) {
-        if (p.name notin sig) {
-            store.messages += {<p.src, error("\'<p.name>\' is not a valid hyperparameter for <expr.algo.name>.", p.src,
-                fixes=invalidParamNameFixes(p.src, p.name, sig))>};
-            continue;
-        }
-        if (!paramTypeMatches(p.val, sig[p.name])) {
-            store.messages += {<p.val.src, error("\'<p.name>\' has an incompatible value: expected <sig[p.name]>.", p.val.src)>};
-        }
-    }
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-ParamSignature signatureOf(algoLR()) = (
-    "fit_intercept": ptBool(),
-    "positive": ptBool()
-);
-
-ParamSignature signatureOf(algoRF()) = (
-    "n_estimators": ptInt(),
-    "max_depth": ptInt(),
-    "criterion": ptEnum({"gini", "entropy", "log_loss"}),
-    "bootstrap": ptBool(),
-    "random_state": ptInt()
-);
-
-ParamSignature signatureOf(algoLogReg()) = (
-    "max_iter": ptInt(),
-    "C": ptFloat(),
-    "penalty": ptEnum({"l1", "l2", "elasticnet", "none"}),
-    "random_state": ptInt()
-);
-
-bool paramTypeMatches(intLit(_), ptInt()) = true;
-
-bool paramTypeMatches(intLit(_), ptFloat()) = true;
-
-bool paramTypeMatches(floatLit(_), ptFloat()) = true;
-
-bool paramTypeMatches(boolLit(_), ptBool()) = true;
-
-bool paramTypeMatches(strLit(strLit(str s)), ptEnum(set[str] allowed)) = s in allowed;
-
-default bool paramTypeMatches(Lit _, ParamType _) = false;
-
-MLOpsStore checkEvalSem(AST::Eval eval, MLOpsStore store) {
-    Task task = store.task;
-    for (EvalRule evalRule <- eval.evalRules) {
-        store.messages += checkEvalRule(evalRule, task);
-    }
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-rel[loc, Message] checkEvalRule(EvalRule er:evalCRule(CMetric m, real threshold), Task task) {
-    rel[loc, Message] msgs = {};
-    if (threshold > 1.0 || threshold < 0) {
-        msgs += {<er.src, error("Threshold for \'<m.name>\' must be between 0 and 1", er.src)>};
-    }
-    if (regression() := task) {
-        msgs += {<er.src, error("Metric <m.name> is not compatible with a <task> model.", er.src)>};
-    }
-    return msgs;
-}
-
-rel[loc, Message] checkEvalRule(EvalRule er:evalRRule(RMetric m, real threshold), Task task) {
-    rel[loc, Message] msgs = {};
-    if (classification() := task) {
-        msgs += {<er.src, error("Metric <m.name> is not compatible with a <task> model.", er.src)>};
-    }
-    return msgs;
-}
-
-MLOpsStore checkMonitorSem(AST::Monitor monitor, MLOpsStore store) {
-    if (!store.dbConnection) {
-        store.messages += {<monitor.src, error("Cannot store user data for monitoring without connected database.", monitor.src,
-            fixes=prepareNoConnectionFixes(monitor.src))>};
-    }
-    list[AST::DriftRule] driftRules = driftRulesOf(monitor);
-    list[loc] ruleLocs = [dr.src | dr <- monitor.driftRules];
-    set[str] seenFeatures = {};
-    for (int i <- [0..size(monitor.driftRules)]) {
-        AST::DriftRule driftRule = driftRules[i];
-        tuple[str feat, int win, int freq, real minEffect, real threshold] dRule = <driftRule.feature.content, driftRule.window, driftRule.freq, driftRule.minEffect, driftRule.threshold>;
-
-        if (dRule.feat == store.targetVariable) {
-            store.messages += {<driftRule.src, error("The target can not be selected as a monitored feature.", driftRule.src,
-                fixes=removeEntryFix("Remove monitoring of target column", ruleLocs, i))>};
-        }
-        if (dRule.feat in seenFeatures) {
-            store.messages += {<driftRule.src, error("Feature \'<dRule.feat>\' is monitored more than once.", driftRule.src,
-                fixes=removeEntryFix("Remove duplicate monitoring of feature", ruleLocs, i))>};
-        } else {
-            seenFeatures += {dRule.feat};
-        }
-        if (dRule.win < 500) {
-            store.messages += {<driftRule.src, warning("The window for drift calculation is small. Recommended is 500 or higher.", driftRule.src)>};
-        }
-        if (dRule.threshold <= 0) {
-            store.messages += {<driftRule.src, error("The threshold cannot be negative or 0.", driftRule.src)>};
-        }
-        if (dRule.freq <= 0) {
-            store.messages += {<driftRule.src, error("The drift calculation frequency cannot be negative or 0.", driftRule.src)>};
-        }
-        if (dmKS() := driftRule.dMethod && dRule.minEffect >= 1) {
-            store.messages += {<driftRule.src, error("The minimum effect bound cannot be greater or equal to 1", driftRule.src)>};
-        }
-        if (dRule.minEffect < 0) {
-            store.messages += {<driftRule.src, error("The minimum effect bound cannot be smaller than 0", driftRule.src)>};
-        }
-    }
-
-    Maybe[int] ms = nothing();
-    list[AST::LatencyRule] latencyRule = latencyRuleOf(monitor);
-    if (size(latencyRule) != 0) {
-        AST::LatencyRule lRule = latencyRule[0];
-        int parsedMs = lRule.ms;
-        if (parsedMs <= 0) {
-            store.messages += {<lRule.src, error("Latency cannot be smaller or equal to 0.", lRule.src)>};
-        } else {
-            ms = just(parsedMs);
-        }
-    }
-
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-list[DriftRule] driftRulesOf(stepMonitor(list[DriftRule] drs, _)) = drs;
-list[DriftRule] driftRulesOf(stepMonitorLatency(_)) = [];
-
-list[LatencyRule] latencyRuleOf(stepMonitor(_, list[LatencyRule] lr)) = lr;
-list[LatencyRule] latencyRuleOf(stepMonitorLatency(LatencyRule l)) = [l];
 
 Summary mlopsSummaryServiceType(loc l, AST::Pipeline input) {
     Summary s = summary(l);
@@ -425,12 +289,6 @@ TypeStore checkModelType(AST::Model model, TypeStore store) {
     }
     return tStore(store.target, store.schema, task, messages=store.messages);
 }
-
-Task taskOf(algoLR()) = regression();
-
-Task taskOf(algoRF()) = classification();
-
-Task taskOf(algoLogReg()) = classification();
 
 TypeStore checkMonitorTypes(AST::Monitor monitor, TypeStore store) {
     Schema schema = store.schema;

@@ -65,16 +65,6 @@ Schema inferSchema(loc csvPath, PID pid) {
     return schema;
 }
 
-ColumnType parseColumnType("integer") = tInteger();
-
-ColumnType parseColumnType("float") = tFloat();
-
-ColumnType parseColumnType("categorical") = tCategorical();
-
-ColumnType parseColumnType("boolean") = tBoolean();
-
-default ColumnType parseColumnType(str _) = tUnknown();
-
 TypeStore checkPipeline(Syntax::Pipeline pipeline) {
     pipelineAST = implode(#AST::Pipeline, pipeline);
     return checkPipeline(pipelineAST);
@@ -98,7 +88,7 @@ TypeStore checkSteps(steps(Load load, list[Split] _, list[Select] select, list[T
     store = checkModel(model, store);
 
     if (size(eval) != 0) {
-        checkEval(eval[0], store);
+        checkEval(eval[0], store.task);
     }
     if (size(monitor) != 0) {
         checkMonitor(monitor[0], store);
@@ -218,64 +208,36 @@ TypeStore checkModel(stepModel(ModelExpr expr), TypeStore store) {
     return tStore(store.target, store.schema, task);
 }
 
-void checkHyperparams(modelTrain(Algorithm algo, StrLit _, list[Param] hyperParams)) {
+MLOpsStore checkHyperparams(modelTrain(Algorithm algo, StrLit _, list[Param] hyperParams), MLOpsStore s = empty()) {
     ParamSignature sig = signatureOf(algo);
     for (hp(str name, Lit val) <- hyperParams) {
-        if (name notin sig) {
-            throw unknownHyperparam("\'<name>\' is not a valid hyperparameter for <algo>.");
-        }
         if (!paramTypeMatches(val, sig[name])) {
-            throw hyperparamTypeMismatch("\'<name>\' has an incompatible value for <algo>: expected <sig[name]>.");
+            if (empty() := s) {
+                throw hyperparamTypeMismatch("\'<name>\' has an incompatible value for <algo>: expected <sig[name]>.");
+            }
+            s.messages += {<val.src, error("\'<name>\' has an incompatible value: expected <sig[name]>.", val.src)>};
         }
     }
+    if (empty() := s) {
+        return s;
+    }
+    return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
 }
 
-ParamSignature signatureOf(algoLR()) = (
-    "fit_intercept": ptBool(),
-    "positive": ptBool()
-);
-
-ParamSignature signatureOf(algoRF()) = (
-    "n_estimators": ptInt(),
-    "max_depth": ptInt(),
-    "criterion": ptEnum({"gini", "entropy", "log_loss"}),
-    "bootstrap": ptBool(),
-    "random_state": ptInt()
-);
-
-ParamSignature signatureOf(algoLogReg()) = (
-    "max_iter": ptInt(),
-    "C": ptFloat(),
-    "penalty": ptEnum({"l1", "l2", "elasticnet", "none"}),
-    "random_state": ptInt()
-);
-
-bool paramTypeMatches(intLit(_), ptInt()) = true;
-
-bool paramTypeMatches(intLit(_), ptFloat()) = true;
-
-bool paramTypeMatches(floatLit(_), ptFloat()) = true;
-
-bool paramTypeMatches(boolLit(_), ptBool()) = true;
-
-bool paramTypeMatches(strLit(strLit(str s)), ptEnum(set[str] allowed)) = s in allowed;
-
-default bool paramTypeMatches(Lit _, ParamType _) = false;
-
-void checkEval(stepEval(set[EvalRule] evalRules), TypeStore store) {
-    Task task = store.task;
+MLOpsStore checkEval(stepEval(set[EvalRule] evalRules), Task task, MLOpsStore s = empty()) {
     for (EvalRule evalRule <- evalRules) {
         if (!ruleMatchesTask(evalRule, task)) {
-            throw incompatibleMetric("Metric <metricName(evalRule)> is not compatible with a <task> model.");
+            if (empty() := s) {
+                throw incompatibleMetric("Metric <metricName(evalRule)> is not compatible with a <task> model.");
+            }
+            s.messages += {<evalRule.src, error("Metric <metricName(evalRule)> is not compatible with a <task> model.", evalRule.src)>};
         }
     }
+    if (empty() := s) {
+        return s;
+    }
+    return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
 }
-
-Task taskOf(algoLR()) = regression();
-
-Task taskOf(algoRF()) = classification();
-
-Task taskOf(algoLogReg()) = classification();
 
 bool ruleMatchesTask(evalCRule(_, _), classification()) = true;
 
