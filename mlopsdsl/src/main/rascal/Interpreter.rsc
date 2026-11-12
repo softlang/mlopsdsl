@@ -18,6 +18,7 @@ import AST;
 import PythonBridge;
 import CodeGen;
 import Store;
+import InlineFixes;
 
 data RuntimeException 
     = reRunWithoutDatabase(str cause)
@@ -110,12 +111,21 @@ MLOpsStore evalLoad(Load l:stepLoad(StrLit path, StrLit target, list[StrLit] dbU
 
 str evalStrLit(strLit(str s)) = s;
 
-MLOpsStore evalSplit(Split sp:stepSplit(real trainSize, list[int] randomState), MLOpsStore s, PID pid) {
+MLOpsStore evalSplit(Split sp:stepSplit(real trainSize, list[int] randomState), MLOpsStore s, PID pid, bool checker = false) {
     if (trainSize <= 0) {
-        throw invalidTrainSize("Train size is below 0.0");
+        if (!checker) {
+            throw invalidTrainSize("Train size is below 0.0");
+        }
+        s.messages += {<sp.src, error("Train size is below 0.0",sp.src)>};
     }
     if (trainSize >= 1) {
-        throw invalidTrainSize("Train size exceeds 1.0");
+        if (!checker) {
+            throw invalidTrainSize("Train size exceeds 1.0");
+        }
+        s.messages += {<sp.src, error("Train size exceeds 1.0",sp.src)>};
+    }
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
     }
     int randState = 42;
     if (size(randomState) != 0) {
@@ -127,46 +137,95 @@ MLOpsStore evalSplit(Split sp:stepSplit(real trainSize, list[int] randomState), 
     return iStore(s.name, dataSplit(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
-MLOpsStore evalSelect(Select se:stepSelect(list[StrLit] features), MLOpsStore s, PID pid) {
-    if (size(features) != size(dup(features))) {
-        throw duplicateFieldSelection("Feature can only be selected once.");
+MLOpsStore evalSelect(Select se:stepSelect(list[StrLit] features), MLOpsStore s, PID pid, bool checker=false) {
+    set[str] seen = {};
+    lrel[loc, str] featureLocs = [<f.src, evalStrLit(f)> | f <- features];
+    for (int i <- [0..size(features)]) {
+        tuple[loc src, str content] f = featureLocs[i];
+        if (f.content == s.targetVariable) {
+            if (!checker) {
+                throw targetSelectedAsFeature("The target column cannot be a feature.");
+            }
+            s.messages += {<f.src, error("The target column cannot be a feature.", f.src,
+                fixes=removeEntryFix("Remove target from selected features", featureLocs<0>, i))>};
+        }
+        if (f.content in seen) {
+            if (!checker) {
+                throw duplicateFieldSelection("Feature can only be selected once.");
+            }
+            s.messages += {<f.src, error("Feature \'<f.content>\' is selected more than once.", f.src,
+                fixes=removeEntryFix("Remove duplicate feature", featureLocs<0>, i))>};    
+        } else {
+            seen += {f.content};
+        }
     }
-    list[str] strFeatures = [];
-    for (StrLit feature <- features) {
-        strFeatures += evalStrLit(feature);
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
     }
-    if (s.targetVariable in strFeatures) {
-        throw targetSelectedAsFeature("The target column cannot be a feature.");
-    }
-    PythonCmd cmd = selectCmd("SELECT", strFeatures);
+    PythonCmd cmd = selectCmd("SELECT", featureLocs<1>);
     PythonResponse res = sendJsonToPython(pid, cmd);
     reportResult(res, "SELECT", se.src);
     return iStore(s.name, featuresSelected(), s.targetVariable, s.dbConnection, s.trainedModelFilePath, s.monitored, s.latency);
 }
 
-MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsStore s, PID pid) {
-    lrel[str tr, str feat, str param] trans = [];
-    for (PrepTransform pt <- transforms) {
-        tuple[str tr, str feat, str param] ptrans = evalPrepTransform(pt);
+MLOpsStore evalTrans(Trans t:stepTrans(list[PrepTransform] transforms), MLOpsStore s, PID pid, bool checker=false) {
+    map[str feat, lrel[str tr, loc src] entries] byFeature = ();
+    lrel[loc, tuple[str tr, str feat, str strat]] transformLocs = [<pt.feature.src, evalPrepTransform(pt)> | pt <- transforms];
+    for (int i <- [0..size(transforms)]) {
+        tuple[str tr, str feat, str strat] ptrans = transformLocs[i]<1>;
+        loc src = transformLocs[i]<0>;
         if (ptrans.feat == s.targetVariable) {
-            throw targetSelectedForTransform("The target column cannot be transformed");
+            if (!checker) {
+                throw targetSelectedForTransform("The target column cannot be transformed");
+            }
+            s.messages += {<src, error("The target column cannot be transformed.", src,
+                fixes=removeEntryFix("Remove transformation of target column", transformLocs<0>, i))>};
+            continue;
         }
-        trans += ptrans;
+        byFeature[ptrans.feat] = (byFeature[ptrans.feat] ? []) + <ptrans.tr, src>;
     }
-    list[list[str]] transforms_per_features = groupDomainByRange(trans<tr,feat>);
-    for (list[str] transforms_per_feature <- transforms_per_features) {
-        if (size(toSet(transforms_per_feature)) != size(transforms_per_feature)) {
-            throw duplicateTransform("Feature must not be transformed multiple times by the same method.");
-        }
-        if ([*_, "scale", *_, "fillna", *_] := transforms_per_feature || [*_, "scale", *_, "encode", *_] := transforms_per_feature) {
-            throw transformOrderViolation("Scaling must be the last transformation of a feature.");
-        }
-        if ([*_, "encode", *_, "fillna", *_] := transforms_per_feature) {
-            throw transformOrderViolation("Missing values must be filled before encoding a feature.");
+    for (str feat <- byFeature) {
+        set[str] seenTrans = {};
+        bool sawScale = false;
+        bool sawEncode = false;
+        for (<str tr, loc src> <- byFeature[feat]) {
+            int idx = indexOf(transformLocs<0>, src);
+            if (tr in seenTrans) {
+                if (!checker) {
+                    throw duplicateTransform("Feature must not be transformed multiple times by the same method.");
+                }
+                s.messages += {<src, error("Feature must not be transformed multiple times by the same method.", src
+                    fixes=removeEntryFix("Remove duplicate transformation", transformLocs<0>, idx))>};
+            } else {
+                seenTrans += {tr};
+            }
+
+            if (sawScale && (tr == "fillna" || tr == "encode")) {
+                if (!checker) {
+                    throw transformOrderViolation("Scaling must be the last transformation of a feature.");
+                }
+                s.messages += {<src, error("Scaling must be the last transformation of a feature.", src)>};
+            }
+            if (tr == "scale") {
+                sawScale = true;
+            }
+
+            if (sawEncode && tr == "fillna") {
+                if (!checker) {
+                    throw transformOrderViolation("Missing values must be filled before encoding a feature.");
+                }
+                s.messages += {<src, error("Missing values must be filled before encoding a feature.", src)>};
+            }
+            if (tr == "encode") {
+                sawEncode = true;
+            }
         }
     }
-    for (tuple[str tr, str feat, str param] ptrans <- trans) {
-        PythonCmd cmd = transformCmd("TRANSFORM", ptrans.tr, ptrans.feat, ptrans.param);
+    if (checker) {
+        return cStore(s.targetVariable, s.dbConnection, s.task, s.messages);
+    }
+    for (tuple[str tr, str feat, str strat] ptrans <- transformLocs<1>) {
+        PythonCmd cmd = transformCmd("TRANSFORM", ptrans.tr, ptrans.feat, ptrans.strat);
         PythonResponse res = sendJsonToPython(pid, cmd);
         reportResult(res, "TRANSFORM", t.src);
     }

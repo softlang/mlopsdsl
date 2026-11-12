@@ -16,6 +16,7 @@ import AST;
 import PythonBridge;
 import Interpreter;
 import Store;
+import InlineFixes;
 
 Summary mlopsAnalysisService(loc l, start[Pipeline] input) 
     = mlopsSummaryServiceSem(l, implode(#AST::Pipeline, input));
@@ -39,13 +40,13 @@ MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
     AST::Steps steps = input.steps;
     store = evalLoad(steps.load, store, -1, false, checker=true);
     if (size(steps.split) != 0) {
-        store = checkSplitSem(steps.split[0], store);
+        store = evalSplit(steps.split[0], store, -1, checker=true);
     }
     if (size(steps.select) != 0) {
-        store = checkSelectSem(steps.select[0], store);
+        store = evalSelect(steps.select[0], store, -1, checker=true);
     }
     if (size(steps.trans) != 0) {
-        store = checkTransSem(steps.trans[0], store);
+        store = evalTrans(steps.trans[0], store, -1, checker=true);
     }
     store = checkModelSem(steps.model, store);
     if (size(steps.eval) != 0) {
@@ -60,82 +61,7 @@ MLOpsStore checkStepsSem(AST::Pipeline input, MLOpsStore store) {
         }
     }
     return store;
-}
-
-MLOpsStore checkSplitSem(AST::Split split, MLOpsStore store) {
-    if (split.trainSize <= 0) {
-        store.messages += {<split.src, error("Train size is below 0.0",split.src)>};
-    }
-    if (split.trainSize >= 1) {
-        store.messages += {<split.src, error("Train size exceeds 1.0",split.src)>};
-    }
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-MLOpsStore checkSelectSem(AST::Select select, MLOpsStore store) {
-    set[str] seen = {};
-    list[loc] featureLocs = [f.src | f <- select.features];
-    for (int i <- [0..size(select.features)]) {
-        AST::StrLit f = select.features[i];
-        if (f.content == store.targetVariable) {
-            store.messages += {<f.src, error("The target column cannot be a feature.", f.src,
-                fixes=removeEntryFix("Remove target from selected features", featureLocs, i))>};
-        }
-        if (f.content in seen) {
-            store.messages += {<f.src, error("Feature \'<f.content>\' is selected more than once.", f.src,
-                fixes=removeEntryFix("Remove duplicate feature", featureLocs, i))>};
-        } else {
-            seen += {f.content};
-        }
-    }
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
-
-MLOpsStore checkTransSem(AST::Trans trans, MLOpsStore store) {
-    map[str feat, lrel[str tr, loc src] entries] byFeature = ();
-    list[loc] transformLocs = [pt.feature.src | pt <- trans.transforms];
-    for (int i <- [0..size(trans.transforms)]) {
-        AST::PrepTransform pt = trans.transforms[i];
-        tuple[str tr, str feat] ptrans = evalPrepTransform(pt)<0,1>;
-        loc src = pt.feature.src;
-        if (ptrans.feat == store.targetVariable) {
-            store.messages += {<src, error("The target column cannot be transformed.", src,
-                fixes=removeEntryFix("Remove transformation of target column", transformLocs, i))>};
-            continue;
-        }
-        byFeature[ptrans.feat] = (byFeature[ptrans.feat] ? []) + <ptrans.tr, src>;
-    }
-    for (str feat <- byFeature) {
-        set[str] seenTrans = {};
-        bool sawScale = false;
-        bool sawEncode = false;
-        for (<str tr, loc src> <- byFeature[feat]) {
-            int idx = indexOf(transformLocs, src);
-            if (tr in seenTrans) {
-                store.messages += {<src, error("Feature must not be transformed multiple times by the same method.", src
-                    fixes=removeEntryFix("Remove duplicate transformation", transformLocs, idx))>};
-            } else {
-                seenTrans += {tr};
-            }
-
-            if (sawScale && (tr == "fillna" || tr == "encode")) {
-                store.messages += {<src, error("Scaling must be the last transformation of a feature.", src)>};
-            }
-            if (tr == "scale") {
-                sawScale = true;
-            }
-
-            if (sawEncode && tr == "fillna") {
-                store.messages += {<src, error("Missing values must be filled before encoding a feature.", src)>};
-            }
-            if (tr == "encode") {
-                sawEncode = true;
-            }
-        }
-    }
-
-    return cStore(store.targetVariable, store.dbConnection, store.task, store.messages);
-}
+}   
 
 MLOpsStore checkModelSem(AST::Model model, MLOpsStore store) {
     store = checkHyperparamsSem(model.expr, store);
@@ -539,99 +465,7 @@ TypeStore checkMonitorTypes(AST::Monitor monitor, TypeStore store) {
     return tStore(store.target, store.schema, store.task, messages=store.messages);
 }
 
-list[CodeAction] prepareNoDeploymentFixes(loc src)
-    = [
-        action(title="Remove monitoring step", edits=[changed(src.top, [replace(src, "")])]),
-        action(title="Add deployment step before monitoring", edits=[changed(src.top, [replace(insertionPointBefore(src), deploymentSnippet(src))])])
-      ];
 
-list[CodeAction] prepareNoConnectionFixes(loc src)
-    = [
-        action(title="Remove monitoring step", edits=[changed(src.top, [replace(src, "")])])
-      ];
-
-loc insertionPointBefore(loc src) = src[length=0][end=src.begin];
-
-str deploymentSnippet(loc src) {
-    str ind = intercalate("", [" " | _ <- [0..src.begin.column]]);
-    str innerInd = ind + "    ";
-    return "deployment (\n"
-         + innerInd + "port = 8000\n"
-         + ind + ")\n"
-         + "\n"
-         + ind;
-}
-
-loc removeEntryLoc(list[loc] \all, int idx) {
-    loc item = \all[idx];
-    if (size(\all) == 1) {
-        return item;
-    }
-    if (idx == size(\all) - 1) {
-        loc prev = \all[idx - 1];
-        int startOffset = prev.offset + prev.length;
-        int endOffset = item.offset + item.length;
-        return item.top[offset=startOffset][length=endOffset-startOffset][begin=prev.end][end=item.end];
-    }
-    loc next = \all[idx + 1];
-    int startOffset = item.offset;
-    int endOffset = next.offset;
-    return item.top[offset=startOffset][length=endOffset-startOffset][begin=item.begin][end=next.begin];
-}
-
-list[CodeAction] removeEntryFix(str title, list[loc] \all, int idx)
-    = [action(title=title, edits=[changed(\all[idx].top, [replace(removeEntryLoc(\all, idx), "")])])];
-
-loc paramNameLoc(loc paramSrc, str name) {
-    int len = size(name);
-    return paramSrc[length=len][end=<paramSrc.begin.line, paramSrc.begin.column + len>];
-}
-
-list[CodeAction] invalidParamNameFixes(loc paramSrc, str invalidName, ParamSignature sig) {
-    loc target = paramNameLoc(paramSrc, invalidName);
-    list[str] validNames = [n | n <- sig];
-    return [
-        action(title="Replace with \'<validName>\'", edits=[changed(target.top, [replace(target, validName)])])
-        | str validName <- validNames
-    ];
-}
-
-int levenshtein(str a, str b) {
-    list[int] la = chars(a);
-    list[int] lb = chars(b);
-    int m = size(la);
-    int n = size(lb);
-    list[list[int]] d = [[0 | _ <- [0..n+1]] | _ <- [0..m+1]];
-
-    for (int i <- [0..m+1]) {
-        d[i][0] = i;
-    }
-    for (int j <- [0..n+1]) {
-        d[0][j] = j;
-    }
-
-    for (int i <- [1..m+1]) {
-        for (int j <- [1..n+1]) {
-            int cost = (la[i-1] == lb[j-1]) ? 0 : 1;
-            d[i][j] = min([
-                d[i-1][j] + 1,
-                d[i][j-1] + 1,
-                d[i-1][j-1] + cost
-            ]);
-        }
-    }
-    return d[m][n];
-}
-
-list[CodeAction] schemaSuggestionFixes(loc src, str invalidName, Schema schema) {
-    list[str] names = [n | n <- schema];
-    lrel[int dist, str name] ranked = sort([<levenshtein(invalidName, n), n> | n <- names]);
-    list[str] topNames = [name | <int _, str name> <- ranked][0..min(5, size(ranked))];
-    return [
-        action(title="Replace with \'<n>\'", edits=[changed(src.top, [replace(src, "\"<n>\"")])])
-        | str n <- topNames
-    ];
-}
 
 set[str] mlopsHoverService(Focus focus) {
     if (focus == []) return {};
