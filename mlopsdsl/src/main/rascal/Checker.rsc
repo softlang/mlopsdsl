@@ -132,16 +132,6 @@ Schema buildSchema(SchemaJson resp) {
     return schema;
 }
 
-ColumnType parseColumnType("integer") = tInteger();
-
-ColumnType parseColumnType("float") = tFloat();
-
-ColumnType parseColumnType("categorical") = tCategorical();
-
-ColumnType parseColumnType("boolean") = tBoolean();
-
-default ColumnType parseColumnType(str _) = tUnknown();
-
 TypeStore checkStepsType(AST::Pipeline input, TypeStore store) {
     AST::Steps steps = input.steps;
     store = checkLoadType(steps.load, store);
@@ -322,8 +312,6 @@ TypeStore checkMonitorTypes(AST::Monitor monitor, TypeStore store) {
     }
     return tStore(store.target, store.schema, store.task, messages=store.messages);
 }
-
-
 
 set[str] mlopsHoverService(Focus focus) {
     if (focus == []) return {};
