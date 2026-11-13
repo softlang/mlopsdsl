@@ -321,6 +321,9 @@ def main():
 
                 typed_params = {}
                 for k, v in hyperparams.items():
+                    if v == "none":
+                        typed_params[k] = None
+                        continue
                     if v in ("true", "false"):
                         typed_params[k] = (v == "true")
                         continue
