@@ -61,7 +61,7 @@ public loc getPythonExecutable() {
 }
 
 PID startPythonWorker() {
-    PID pid = createProcess(getPythonExecutable(), args=[getPath("pipeline_worker.py")], envVars=("PYTHONIOECODING":"utf-8"));
+    PID pid = createProcess(getPythonExecutable(), args=[getPath("pipeline_worker.py")], envVars=("PYTHONIOENCODING":"utf-8"));
     if (!isAlive(pid)) throw workerStartFailed("Python worker could not be started.");
     return pid;
 }
