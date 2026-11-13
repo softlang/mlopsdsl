@@ -61,27 +61,35 @@ public loc getPythonExecutable() {
 }
 
 PID startPythonWorker() {
-    PID pid = createProcess(getPythonExecutable(), args=[getPath("pipeline_worker.py")]);
+    PID pid = createProcess(getPythonExecutable(), args=[getPath("pipeline_worker.py")], envVars=("PYTHONIOECODING":"utf-8"));
     if (!isAlive(pid)) throw workerStartFailed("Python worker could not be started.");
     return pid;
 }
 
-PythonResponse sendJsonToPython(PID pid, PythonCmd command) {
+PythonResponse sendJsonToPython(PID pid, PythonCmd command, int timeoutMs = 30000) {
     str jsonPayload = asJSON(command);
     writeTo(pid, jsonPayload + "\n");
-    str rawResponse = "";
-    int tries = 0;
-    while (rawResponse == "" && tries < 60) {
-        rawResponse = readWithWait(pid, 500);
-        tries += 1;
-        if (!isAlive(pid) && rawResponse == "") {
-            str err = readFromErr(pid);
-            throw workerCrashed("Python process crashed! Error: <err>");
+    str buffer = "";
+    int waited = 0;
+    while (!contains(buffer, "\n")) {
+        str chunk = readWithWait(pid, 100);
+        buffer += chunk;
+        if (chunk == "") {
+            waited += 100;
+            if (!isAlive(pid)) {
+                buffer += readFrom(pid);
+                if (!contains(buffer, "\n")) {
+                    throw workerCrashed("Python process crashed! Error: <readEntireErrStream(pid)>");
+                }
+            } else if (waited >= timeoutMs) {
+                stopPythonWorker(pid);
+                throw workerTimeout("Timeout: Python worker does not respond.");
+            }
         }
+        
     }
-    if (rawResponse == "") throw workerTimeout("Timeout: Python worker does not respond.");
-    PythonResponse resp = parseJSON(#PythonResponse, trim(rawResponse));
-    return resp;
+    str line = split("\n", buffer)[0];
+    return parseJSON(#PythonResponse, trim(line));
 }
 
 void stopPythonWorker(PID pid) {
