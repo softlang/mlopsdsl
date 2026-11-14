@@ -54,7 +54,7 @@ MLOpsStore evalPipeline(Syntax::Pipeline pipeline, bool reRun = false) {
 
 MLOpsStore evalPipeline(pipeline(str name, Steps steps), bool reRun) {
     PID pid = startPythonWorker();
-    MLOpsStore s = empty();
+    MLOpsStore s = noStore();
     try
         s = evalSteps(steps, iStore(name, uninitialized(), "", false, "", false, nothing()), pid, reRun);
     catch RuntimeException e: {

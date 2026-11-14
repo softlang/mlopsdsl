@@ -16,7 +16,7 @@ data PipelineState
 
 data MLOpsStore = iStore(str name, PipelineState state, str targetVariable, bool dbConnection, str trainedModelFilePath, bool monitored, Maybe[int] latency)
                 | cStore(str targetVariable, bool dbConnection, Task task, rel[loc, Message] messages)
-                | empty();
+                | noStore();
 
 data ColumnType
     = tInteger()

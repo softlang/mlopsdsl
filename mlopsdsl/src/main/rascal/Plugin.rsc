@@ -12,6 +12,7 @@ import Interpreter;
 import TypeSystem;
 import Checker;
 import Outline;
+import Store;
 
 start[Pipeline] pipelineParsingService(str s, loc l) =
     parse(#start[Pipeline], s, l, allowRecovery=true);
