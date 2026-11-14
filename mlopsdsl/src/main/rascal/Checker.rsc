@@ -89,39 +89,6 @@ TypeStore checkStepsSlow(AST::Pipeline input) {
     return store;
 }
 
-TypeStore checkMonitorTypes(AST::Monitor monitor, TypeStore store) {
-    Schema schema = store.schema;
-    for (DriftRule driftRule <- monitor.driftRules) {
-        StrLit feat = driftRule.feature;
-        rel[loc, Message] msgs = {};
-        if (feat.content notin schema) {
-            msgs += {<feat.src, error("Column \'<feat.content>\' not part of selected features.", feat.src,
-                fixes=schemaSuggestionFixes(feat.src, feat.content, schema))>};
-        }
-        store.messages += msgs;
-        if (size(msgs) != 0) {
-            continue;
-        }
-        ColumnType oldType = store.schema[feat.content].ctype;
-        if (colInfoEnc(_,_,oType) := store.schema[feat.content]) {
-            oldType = oType;
-        }
-        switch(driftRule.dMethod) {
-            case dmKS(): {
-                if (oldType in {tInteger(), tCategorical(), tBoolean()}) {
-                    store.messages += {<driftRule.dMethod.src, warning("The Kolmogorow-Smirnow method is normally only used for numerical features but <feat.content> is type <oldType>", driftRule.dMethod.src)>};
-                }
-            }
-            case dmChiSquare(): {
-                if (oldType in {tInteger(), tFloat()}) {
-                    store.messages += {<driftRule.dMethod.src, warning("The Chi² method is normally only used for categorical features but <feat.content> is type <oldType>", driftRule.dMethod.src)>};
-                }
-            }
-        }
-    }
-    return tStore(store.target, store.schema, store.task, messages=store.messages);
-}
-
 set[str] mlopsHoverService(Focus focus) {
     if (focus == []) return {};
     loc cursorLoc = focus[1].src;
