@@ -147,8 +147,8 @@ def main():
                 send_response("SUCCESS", f"{info}. Form: {context['df'].shape}")
             
             elif cmd == "SPLIT":
-                ratio = float(request["ratio"]);
-                random_state = int(request["randomState"]);
+                ratio = request["ratio"]
+                random_state = int(request["randomState"])
                 X = context["df"]
                 y = context["y"]
                 

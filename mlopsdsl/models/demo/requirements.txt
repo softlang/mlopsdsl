@@ -1,6 +1,10 @@
 fastapi
 uvicorn[standard]
 pandas
+numpy
 scikit-learn
 joblib
+scipy
+sqlalchemy==2.0.54
+psycopg2-binary==2.9.13
     
