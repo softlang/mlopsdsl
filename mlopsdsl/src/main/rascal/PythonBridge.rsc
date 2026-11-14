@@ -98,6 +98,6 @@ void stopPythonWorker(PID pid) {
             killProcess(pid, force=true);
         }
     } catch RuntimeException _: {
-        return;   // Prozess war schon aufgeräumt
+        return;
     }
 }
