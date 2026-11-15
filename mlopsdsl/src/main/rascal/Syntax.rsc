@@ -1,7 +1,7 @@
 module Syntax
 
 layout Layout = WhitespaceAndComment* !>> [\ \t\n\r#];
-lexical WhitespaceAndComment = [\ \t\n\r] | @category="Comment" "#" ![\n]* $;
+lexical WhitespaceAndComment = [\ \t\n\r] | @category="Comment" "#" ![\n]* !>> ![\n];
 
 start syntax Pipeline = pipeline: "pipeline" Id name "{" Steps steps "}";
 
@@ -74,7 +74,7 @@ lexical Id = [a-zA-Z_][a-zA-Z0-9_]* !>> [a-zA-Z0-9_] \ Keywords;
 lexical IntLit   = "-"? [0-9]+;
 lexical FloatLit = "-"? [0-9]+ "." [0-9]+;
 lexical BoolLit = "true" | "false";
-lexical StrContent = ![\"]*;
+lexical StrContent = ![\"\n\r]* !>> ![\"\n\r];
 
 keyword Keywords
   = "pipeline" 
