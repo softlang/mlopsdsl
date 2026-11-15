@@ -8,8 +8,8 @@ This repository is a monorepo with two tightly coupled sub-projects:
 
 ```
 .
-├── mlopsdsl/            The actual language implementation (Rascal, Maven)
-└── mlopsdsl-extension/  VS Code extension that packages mlopsdsl as a standalone JAR
+├── mlopsdsl/            The actual language implementation (Rascal, Python, Maven)
+└── mlopsdsl-extension/  TypeScript implementation that packages mlopsdsl as a .vsix
 ```
 
 Both folders belong together and are intentionally versioned together: `mlopsdsl-extension` contains no logic of its own — only packaging and activation code for exactly the JAR built from `mlopsdsl`.
@@ -18,9 +18,13 @@ Both folders belong together and are intentionally versioned together: `mlopsdsl
 
 Contains:
 
-- **Grammar** (`Syntax.rsc`) — parser for `.mlops` files
-- **Type checking** (`TypeSystem.rsc`, `Checker.rsc`) — including schema inference from CSV files via an external Python script
-- **Python bridge** (`PythonBridge.rsc`) — starts/communicates with Python helper scripts (`src/main/python/`) at runtime
+- **Grammar** (`Syntax.rsc`, `AST.rsc`) — concrete and abstract syntax for parsing `.mlops` files
+- **Type checking** (`TypeSystem.rsc`) — including schema inference from CSV files via an external Python script
+- **Interpreter** (`Interpreter.rsc`) — execution of pipeline to generate model and deployment artifacts via external Python script
+- **Code Generation** (`CodeGen.rsc`) — called by `Interpreter.rsc` to generate deployment artifacts
+- **Checker** (`Checker.rsc`) — uses parts of type `TypeSystem.rsc` and `Interpreter.rsc` to enable IDE highlighting
+- **Outline** (`Outline.rsc`) — generates tree structure for outline in the IDE 
+- **Helper modules** (`PythonBridge.rsc`, `Store.rsc`, `InlineFixes.rsc`) — starts/communicates with Python helper scripts (`src/main/python/`) at runtime, encapsulates stores and related methods for typing and execution, implements quick fixes in IDE
 - **Language services** (`Plugin.rsc`) — registers parser, type checking, code lenses, and execution with the Rascal LSP
 
 ### Requirements
