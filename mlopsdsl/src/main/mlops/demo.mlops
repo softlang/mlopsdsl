@@ -1,6 +1,6 @@
 pipeline demo {
     load (
-        path = "../../../data/Titanic-Dataset.csv",
+        path = "../../../data/advanced/Titanic-Dataset.csv",
         target = "Survived",
         databaseURL = "postgresql://mlops:mlops@localhost:5432/mlops"
     )

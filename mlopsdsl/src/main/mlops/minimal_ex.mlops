@@ -1,14 +1,10 @@
 pipeline minimal_ex {
     load (
-        path =" ../../../data/Titanic-Dataset.csv",
-        target = "Survived"
+        path ="../../../data/simple/Outdoor-Tennis-Dataset.csv",
+        target = "Allowed"
     )
 
-    transformation (
-        encode("Pclass", onehot)
-    )
-
-    model LogReg (
+    model RandomForest (
         dir = "../../../models"
     )
 }
