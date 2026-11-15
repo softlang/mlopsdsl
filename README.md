@@ -51,6 +51,10 @@ main();
 
 This loads the language and its Python scripts directly from the local source folders (`src/main/rascal`, `src/main/python`) — including a virtual Python environment created locally under `src/main/.mlopsenv`.
 
+### Language examples
+
+Examples of .mlops files can be found in [src/main/mlops](mlopsdsl/src/main/mlops), the datasets they use are located in [data/](mlopsdsl/data) and the generated artifacts live in [models/](mlopsdsl/models)
+
 ## `mlopsdsl-extension` — VS Code Extension
 
 Packages the JAR built from `mlopsdsl` together with the Python scripts (excluding `.mlopsenv`) into an installable `.vsix` file, so users can use the language without their own Rascal installation.
