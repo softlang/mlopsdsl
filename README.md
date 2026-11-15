@@ -27,6 +27,7 @@ Contains:
 
 - Java 11+ and Maven
 - Rascal VS Code extension 0.13.5 (for the `main()` test mode during development)
+- Python 3.11 or higher
 
 ### Building
 
@@ -50,7 +51,7 @@ This loads the language and its Python scripts directly from the local source fo
 
 Packages the JAR built from `mlopsdsl` together with the Python scripts (excluding `.mlopsenv`) into an installable `.vsix` file, so users can use the language without their own Rascal installation.
 
-### Requirements
+### Additional Requirements
 
 - Node.js + npm
 
