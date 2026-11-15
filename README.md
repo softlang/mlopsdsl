@@ -9,7 +9,7 @@ This repository is a monorepo with two tightly coupled sub-projects:
 ```
 .
 ├── mlopsdsl/            The actual language implementation (Rascal, Python, Maven)
-└── mlopsdsl-extension/  TypeScript implementation that packages mlopsdsl as a .vsix
+└── mlopsdsl-extension/  TypeScript implementation that packages mlopsdsl as a `.vsix`
 ```
 
 Both folders belong together and are intentionally versioned together: `mlopsdsl-extension` contains no logic of its own — only packaging and activation code for exactly the JAR built from `mlopsdsl`.
@@ -31,7 +31,8 @@ Contains:
 
 - Java 11+ and Maven
 - Rascal VS Code extension 0.13.5 (for the `main()` test mode during development)
-- Python 3.11 or higher
+- Python 3.11+
+- (Optional) Docker
 
 ### Building
 
@@ -53,7 +54,7 @@ This loads the language and its Python scripts directly from the local source fo
 
 ### Language examples
 
-Examples of .mlops files can be found in [src/main/mlops](mlopsdsl/src/main/mlops), the datasets they use are located in [data/](mlopsdsl/data) and the generated artifacts live in [models/](mlopsdsl/models)
+Examples of .mlops files can be found in [src/main/mlops](mlopsdsl/src/main/mlops), the datasets they use are located in [data/](mlopsdsl/data) and the generated artifacts live in [models/](mlopsdsl/models). For the full [demo](mlopsdsl/src/main/mlops/demo.mlops) to work properly Docker is required to first run the [PostgreSQL database](mlopsdsl/data/advanced/docker-compose.db.yml). Afterwards run `docker compose up` [here](mlopsdsl/models/demo) to start an API that will be reachable under localhost:8000/predict responding to requests with the JSON format e.g. `{"Pclass": 1, "Sex": "female", "Age": 58.0, "SibSp": 0, "Parch": 0, "Fare": 26.55}`. Not generated automatically after running but still included for minimal example running is the Python script in [minimal_ex](mlopsdsl/models/minimal_ex) which loads the generated model artifact and calls an example prediction.
 
 ## `mlopsdsl-extension` — VS Code Extension
 
