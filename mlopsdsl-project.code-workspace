@@ -5,9 +5,6 @@
 		},
 		{
 			"path": "mlopsdsl-extension"
-		},
-		{
-			"path": "README.md"
 		}
 	],
 	"settings": {}
